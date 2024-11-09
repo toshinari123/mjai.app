@@ -56,7 +56,7 @@ pub struct BatchGame {
     pub init_scores: [i32; 4],
 }
 
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Default, Debug)]
 pub struct Index {
     /// For `Game` to find a specific `Agent`.
     pub agent_idx: usize,
@@ -291,11 +291,13 @@ impl BatchGame {
             seeds.len(),
         );
 
+        let mut records = vec![GameResult::default(); indexes.len()];
         let mut games = indexes
             .iter()
             .zip(seeds)
             .enumerate()
             .map(|(game_idx, (idxs, &seed))| {
+                let mut exit = false;
                 let mut oracle_obs_versions = [None; 4];
                 for (i, idx) in idxs.iter().enumerate() {
                     // self.last_index = idx;
@@ -303,7 +305,7 @@ impl BatchGame {
                     oracle_obs_versions[i] = agents[idx.agent_idx].oracle_obs_version();
                 }
 
-                let game = Box::new(Game {
+                let mut boxedgame = Box::new(Game {
                     length: self.length,
                     seed,
                     indexes: *idxs,
@@ -314,20 +316,71 @@ impl BatchGame {
                     oracle_obs_versions,
                     ..Default::default()
                 });
-                Ok((game_idx, game))
-            })
-            .collect::<Result<VecDeque<_>>>()?;
 
-        let mut records = vec![GameResult::default(); games.len()];
-        let mut to_remove = vec![];
-
-        while !games.is_empty() {
-            for (idx_for_rm, (game_idx, game)) in games.iter_mut().enumerate() {
+                let game = &mut boxedgame;
+                eprintln!("running game {:?}...", seed);
                 loop {
-                    match game.poll(agents) {
+                    loop {
+                        match game.poll(agents) {
+                            Err(_err) => {
+                                // Rescure game result
+                                let err_msg = _err.to_string();
+                                let err_deltas = get_error_delta(game)?;
+                                println!("{}", err_msg);
+
+                                let error_msg = "error".to_string();
+                                game.board.add_log(EventExt {
+                                    event: Event::Ryukyoku {
+                                        deltas: Some(err_deltas),
+                                        reason: Some(error_msg),
+                                    },
+                                    meta: None,
+                                });
+                                game.board.add_log(EventExt {
+                                    event: Event::EndKyoku,
+                                    meta: None,
+                                });
+                                let logs = game.board.take_log();
+                                game.game_log.push(logs);
+
+                                let names = [
+                                    agents[game.indexes[0].agent_idx].name(),
+                                    agents[game.indexes[1].agent_idx].name(),
+                                    agents[game.indexes[2].agent_idx].name(),
+                                    agents[game.indexes[3].agent_idx].name(),
+                                ];
+                                let game_result = GameResult {
+                                    names,
+                                    scores: game.scores,
+                                    seed: game.seed,
+                                    game_log: mem::take(&mut game.game_log),
+                                };
+                                records[game_idx] = game_result;
+                                exit = true;
+                                break;
+                            }
+                            _ => {}
+                        }
+
+                        if game.ended || game.kyoku_started {
+                            break;
+                        }
+                    }
+                    if (exit) {
+                        break;
+                    }
+
+                    match game.commit(agents) {
+                        Ok(Some(record)) => {
+                            records[game_idx] = record;
+                            exit = true;
+                        }
                         Err(_err) => {
                             // Rescure game result
-                            let err_msg = _err.to_string();
+                            let err_msg = match _err.source() {
+                                Some(err) => err.to_string(),
+                                None => "unknown error".to_string(),
+                            };
                             let err_deltas = get_error_delta(game)?;
                             println!("{}", err_msg);
 
@@ -358,77 +411,19 @@ impl BatchGame {
                                 seed: game.seed,
                                 game_log: mem::take(&mut game.game_log),
                             };
-                            records[*game_idx] = game_result;
-
-                            to_remove.push(idx_for_rm);
-                            break;
+                            records[game_idx] = game_result;
+                            exit = true;
                         }
                         _ => {}
                     }
-
-                    if game.ended || game.kyoku_started {
+                    if (exit) {
                         break;
                     }
                 }
-            }
-            for idx_for_rm in to_remove.drain(..).rev() {
-                games.remove(idx_for_rm);
-            }
 
-            for (idx_for_rm, (game_idx, game)) in games.iter_mut().enumerate() {
-                match game.commit(agents) {
-                    Ok(Some(record)) => {
-                        records[*game_idx] = record;
-                        to_remove.push(idx_for_rm);
-                    }
-                    Err(_err) => {
-                        // Rescure game result
-                        let err_msg = match _err.source() {
-                            Some(err) => err.to_string(),
-                            None => "unknown error".to_string(),
-                        };
-                        let err_deltas = get_error_delta(game)?;
-                        println!("{}", err_msg);
-
-                        let error_msg = "error".to_string();
-                        game.board.add_log(EventExt {
-                            event: Event::Ryukyoku {
-                                deltas: Some(err_deltas),
-                                reason: Some(error_msg),
-                            },
-                            meta: None,
-                        });
-                        game.board.add_log(EventExt {
-                            event: Event::EndKyoku,
-                            meta: None,
-                        });
-                        let logs = game.board.take_log();
-                        game.game_log.push(logs);
-
-                        let names = [
-                            agents[game.indexes[0].agent_idx].name(),
-                            agents[game.indexes[1].agent_idx].name(),
-                            agents[game.indexes[2].agent_idx].name(),
-                            agents[game.indexes[3].agent_idx].name(),
-                        ];
-                        let game_result = GameResult {
-                            names,
-                            scores: game.scores,
-                            seed: game.seed,
-                            game_log: mem::take(&mut game.game_log),
-                        };
-                        records[*game_idx] = game_result;
-
-                        to_remove.push(idx_for_rm);
-                        break;
-                    }
-                    _ => {}
-                }
-            }
-            for idx_for_rm in to_remove.drain(..).rev() {
-                games.remove(idx_for_rm);
-            }
-        }
+                Ok(())
+            })
+            .collect::<Result<VecDeque<_>>>()?;
 
         Ok(records)
     }

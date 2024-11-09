@@ -36,13 +36,27 @@ class MyHTTPRequestHandler(BaseHTTPRequestHandler):
         self.wfile.write(b"OK")
 
     def do_POST(self):
+        global proc
         content_length = int(self.headers["content-length"])
         content = self.rfile.read(content_length).decode("utf-8")
 
         proc.stdin.write((content + "\n").encode("utf8"))  # type: ignore
         proc.stdin.flush()  # type: ignore
         outs = proc.stdout.readline().decode("utf8").strip()  # type: ignore
-
+        if "end_game" in content:
+            proc.kill()
+            proc = subprocess.Popen(
+                [
+                    "/workspace/.pyenv/shims/python",
+                    "-u",
+                    "bot.py",
+                    sys.argv[1],
+                ],
+                stdout=subprocess.PIPE,
+                stderr=sys.stderr,
+                stdin=subprocess.PIPE,
+            )
+        
         sys.stdout.write(outs + "\n")
         sys.stdout.flush()
 
@@ -67,6 +81,7 @@ class MyHTTPServer(HTTPServer):
 
 
 def main():
+    global proc
     try:
         with MyHTTPServer(address, MyHTTPRequestHandler) as server:
             server.serve_forever()

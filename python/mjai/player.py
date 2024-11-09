@@ -116,10 +116,12 @@ class MjaiPlayerClient:
         )
         assert proc.stdout is not None
         self.container_name = proc.stdout.readline().strip().decode("utf8")
-        logger.info(f"Started. Container ID: {self.container_name}")
+        # logger.info(f"Started. Container ID: {self.container_name}")
+        print(f"Started. Container ID: {self.container_name}")
 
         # Wait until the server is ready
-        logger.info(f"Wait until the player {player_id} is ready")
+        # logger.info(f"Wait until the player {player_id} is ready")
+        print(f"Wait until the player {player_id} is ready")
 
         # Workaround: http server が立ち上がる前にリクエストが飛ぶとエラーになる
         time.sleep(2.0)
